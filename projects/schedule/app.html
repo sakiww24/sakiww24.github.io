@@ -1,1 +1,460 @@
-To be continued...
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <!-- 手机端适配：宽度=device宽度，禁止缩放（类似原生 App 的体验） -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>课表日程</title>
+    <style>
+        /* ==================== 全局基础样式 ==================== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            /* iOS 风格：系统字体栈 */
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            -webkit-tap-highlight-color: transparent; /* 去掉点按时的高亮闪烁 */
+        }
+
+        :root {
+            /* 主题变量：iOS 蓝 + 浅灰背景 */
+            --color-primary: #007AFF;
+            --color-bg: #F2F2F7;
+            --color-card: #FFFFFF;
+            --color-text-main: #1C1C1E;
+            --color-text-sub: #8E8E93;
+            --color-border: #E5E5EA;
+            --header-height: 56px;  /* 顶部导航栏高度 */
+            --navbar-height: 54px;  /* 底部导航栏高度 */
+            /* 网格每小时高度：JS 双指缩放时动态修改，网格所有尺寸都基于它计算 */
+            --hh: 60px;
+        }
+
+        html, body {
+            height: 100%;
+            background: var(--color-bg);
+            color: var(--color-text-main);
+            overflow: hidden; /* 页面本身不滚动，滚动交给中间内容区 */
+            /* 禁用双击缩放（iOS Safari 会无视 viewport 的 user-scalable=no，必须靠这句） */
+            touch-action: manipulation;
+        }
+
+        /* ==================== 整体三段式布局 ==================== */
+        /* 结构：顶部导航 / 中间内容（可滚动）/ 底部导航 */
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            max-width: 520px;      /* 手机端为主，宽屏时居中限宽 */
+            margin: 0 auto;
+            background: var(--color-card);
+        }
+
+        /* ==================== 顶部导航栏 ==================== */
+        .app-header {
+            height: var(--header-height);
+            flex-shrink: 0;              /* 高度固定，不被压缩 */
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            background: var(--color-card);
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        /* 左右两侧的按钮组，各占固定空间，中间标题自适应 */
+        .header-side {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            min-width: 72px; /* 保证两侧宽度相近，标题居中 */
+        }
+        .header-side.right {
+            justify-content: flex-end;
+        }
+
+        /* 中间组合容器：‹ 标题 › 整体居中，按钮对称分居两侧 */
+        .header-center {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }
+
+        /* 标题：月份 + 周次，后续由 JS 动态更新 */
+        .header-title {
+            font-size: 17px;
+            font-weight: 600;
+            min-width: 96px; /* 给标题固定最小宽度，避免周次文字变化时按钮跳动 */
+            text-align: center;
+        }
+
+        /* 通用按钮：iOS 风格的圆形浅灰底按钮 */
+        .icon-btn {
+            border: none;
+            background: var(--color-bg);
+            color: var(--color-primary);
+            font-size: 15px;
+            padding: 6px 12px;
+            border-radius: 16px;
+            cursor: pointer;
+        }
+        .icon-btn:active {
+            opacity: 0.5; /* iOS 点按反馈 */
+        }
+
+        /* ==================== 中间内容区：周视图网格 ==================== */
+        .app-main {
+            flex: 1;
+            overflow-y: auto;  /* 内容区独立纵向滚动 */
+            overflow-x: hidden;
+            position: relative;
+            /* 只允许浏览器接管单指纵向滚动；
+               双指捏合不在允许列表里，会被交给 JS 处理（调整时间轴高度） */
+            touch-action: pan-y;
+        }
+
+        /* 网格整体：横向排列「时间轴列 + 星期列们」 */
+        .grid {
+            display: flex;
+            min-height: 100%;
+        }
+
+        /* ---- 左侧时间轴列 ---- */
+        .time-col {
+            width: 44px;
+            flex-shrink: 0;
+        }
+
+        /* 左上角角格：留白，高度与星期列头一致，吸顶 */
+        .corner {
+            height: 44px;
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            background: var(--color-card);
+        }
+
+        /* 时间标签容器：相对定位，高度 = 18 小时 × 每小时高度 */
+        .time-labels {
+            position: relative;
+            height: calc(18 * var(--hh));
+        }
+
+        /* 单个时间标签：top 由 JS 写入的 --h（第几个小时）× --hh 算出，
+           再向上偏移一半实现“骑线” */
+        .time-label {
+            position: absolute;
+            top: calc(var(--h) * var(--hh));
+            right: 6px;
+            transform: translateY(-50%);
+            font-size: 10px;
+            color: var(--color-text-sub);
+        }
+
+        /* ---- 右侧星期容器：七列均分剩余宽度 ---- */
+        .days {
+            flex: 1;
+            display: flex;
+        }
+
+        /* 单天列 */
+        .day-col {
+            flex: 1;
+            min-width: 0; /* 允许列收缩，保证 7 列等分 */
+        }
+
+        /* 列头：吸顶（纵向滚动时星期始终可见） */
+        .day-header {
+            height: 44px;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 1px;
+            background: var(--color-card);
+            border-bottom: 1px solid var(--color-border);
+        }
+        .day-header .dow {
+            font-size: 13px;
+            color: var(--color-text-sub);
+        }
+        .day-header .date {
+            font-size: 15px;
+            font-weight: 600;
+        }
+        /* 今天高亮：列头文字变主题蓝 */
+        .day-header.today .dow,
+        .day-header.today .date {
+            color: var(--color-primary);
+        }
+
+        /* 当天主体：JS 写入与网格同高。
+           竖线只画在这里（不穿过列头），用虚线；小时横线用渐变画出（无半小时线） */
+        .day-body {
+            position: relative; /* 之后课程/日程卡片用绝对定位放进这里 */
+            height: calc(18 * var(--hh)); /* 与左侧时间轴同高 */
+            border-left: 1px dashed var(--color-border);
+            /* 渐变周期用 var(--hh)：双指缩放时横线间距与时间轴同步变化 */
+            background: repeating-linear-gradient(
+                to bottom,
+                var(--color-border) 0, var(--color-border) 1px,
+                transparent 1px, transparent var(--hh)
+            );
+        }
+
+        /* ==================== 底部导航栏 ==================== */
+        .app-navbar {
+            height: var(--navbar-height);
+            flex-shrink: 0;
+            display: flex;
+            border-top: 1px solid var(--color-border);
+            background: var(--color-card);
+            padding-bottom: env(safe-area-inset-bottom); /* iPhone 底部安全区 */
+        }
+
+        /* 每个导航项：图标 + 文字 */
+        .nav-item {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            font-size: 11px;
+            color: var(--color-text-sub);
+            cursor: pointer;
+            user-select: none;
+        }
+        .nav-item .nav-icon {
+            font-size: 20px;
+            line-height: 1;
+        }
+        /* 选中态：iOS 蓝（当前默认选中第一个） */
+        .nav-item.active {
+            color: var(--color-primary);
+        }
+    </style>
+<base target="_blank">
+</head>
+<body>
+    <!-- 整体容器：三段式布局 -->
+    <div id="app">
+
+        <!-- ===== 顶部导航栏 ===== -->
+        <header class="app-header">
+            <!-- 左侧：回到今天 -->
+            <div class="header-side">
+                <button class="icon-btn" id="btn-today">今天</button>
+            </div>
+
+            <!-- 中间：周切换（‹ › 对称分居标题两侧）+ 标题（如“9月 · 第2周”） -->
+            <div class="header-center">
+                <button class="icon-btn" id="btn-prev-week" aria-label="上一周">‹</button>
+                <div class="header-title" id="header-title">课表</div>
+                <button class="icon-btn" id="btn-next-week" aria-label="下一周">›</button>
+            </div>
+
+            <!-- 右侧：菜单 -->
+            <div class="header-side right">
+                <button class="icon-btn" id="btn-menu" aria-label="菜单">☰</button>
+            </div>
+        </header>
+
+        <!-- ===== 中间内容区：周视图网格（由 JS 动态生成） ===== -->
+        <main class="app-main" id="app-main"></main>
+
+        <!-- ===== 底部导航栏 ===== -->
+        <nav class="app-navbar">
+            <!-- 每项：图标用 emoji 临时代替，之后可换成 SVG / 图标字体 -->
+            <!-- 课表与日程同屏显示，所以首页即“日程”，底部不再单列“课表” -->
+            <div class="nav-item active" data-page="schedule">
+                <span class="nav-icon">📅</span>
+                <span>日程</span>
+            </div>
+            <div class="nav-item" data-page="todo">
+                <span class="nav-icon">✅</span>
+                <span>待办</span>
+            </div>
+            <div class="nav-item" data-page="me">
+                <span class="nav-icon">👤</span>
+                <span>我的</span>
+            </div>
+        </nav>
+    </div>
+
+    <script>
+        /* ========================================================
+         * 网格配置区
+         * 之后做「小时网格 / 课程时间网格」切换时，改这里即可
+         * ======================================================== */
+        const GRID_START_HOUR = 6;   // 时间轴起点：早上 6 点
+        const GRID_END_HOUR   = 24;  // 时间轴终点：晚上 24 点（即次日 0 点）
+        const DOW_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
+
+        const HOURS = GRID_END_HOUR - GRID_START_HOUR;  // 共 18 小时
+
+        /* ---- 时间轴缩放状态（双指缩放时变化） ---- */
+        let hourHeight = 60;          // 当前每小时高度（px）
+        const HOUR_HEIGHT_MIN = 30;   // 缩放下限
+        const HOUR_HEIGHT_MAX = 120;  // 缩放上限
+        let pinchState = null;        // 双指手势进行中的临时状态
+
+        /* ==================== 工具函数 ==================== */
+
+        // 获取“某日期所在周的周一”
+        // JS 里 getDay() 周日=0、周一=1……用 (day+6)%7 转成“距周一的天数”
+        function getMonday(date) {
+            const d = new Date(date);
+            d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+            d.setHours(0, 0, 0, 0);
+            return d;
+        }
+
+        /* ==================== 渲染周视图网格 ==================== */
+        function renderWeekGrid(baseDate) {
+            const appMain = document.getElementById('app-main');
+            const monday = getMonday(baseDate);
+
+            /* ---- 1. 左侧时间轴列 ---- */
+            const timeCol = document.createElement('div');
+            timeCol.className = 'time-col';
+            timeCol.innerHTML = '<div class="corner"></div>'; // 左上角留白角格
+
+            const timeLabels = document.createElement('div');
+            timeLabels.className = 'time-labels';
+            // 每个整点一个标签：6:00 ~ 23:00（终点 24:00 不标）
+            for (let h = GRID_START_HOUR; h < GRID_END_HOUR; h++) {
+                const label = document.createElement('div');
+                label.className = 'time-label';
+                label.textContent = h + ':00';
+                // 只写入“第几个小时”，实际 top 由 CSS 的 calc(var(--h) * var(--hh)) 计算，
+                // 这样双指缩放时不需要重新渲染，改一个变量即可
+                label.style.setProperty('--h', h - GRID_START_HOUR);
+                timeLabels.appendChild(label);
+            }
+            timeCol.appendChild(timeLabels);
+
+            /* ---- 2. 右侧 7 个星期列 ---- */
+            const days = document.createElement('div');
+            days.className = 'days';
+
+            const today = new Date();
+            for (let i = 0; i < 7; i++) {
+                const date = new Date(monday);
+                date.setDate(monday.getDate() + i);
+
+                const col = document.createElement('div');
+                col.className = 'day-col';
+
+                // 列头：星期（换行）日期；今天高亮
+                const header = document.createElement('div');
+                header.className = 'day-header';
+                if (date.toDateString() === today.toDateString()) {
+                    header.classList.add('today');
+                }
+                header.innerHTML =
+                    `<span class="dow">${DOW_NAMES[i]}</span>` +
+                    `<span class="date">${date.getDate()}</span>`;
+                col.appendChild(header);
+
+                // 主体：空白网格（高度由 CSS 变量控制），之后课程/日程卡片就绝对定位在这里
+                const body = document.createElement('div');
+                body.className = 'day-body';
+                col.appendChild(body);
+
+                days.appendChild(col);
+            }
+
+            /* ---- 3. 组装并插入页面 ---- */
+            const grid = document.createElement('div');
+            grid.className = 'grid';
+            grid.appendChild(timeCol);
+            grid.appendChild(days);
+            appMain.innerHTML = '';
+            appMain.appendChild(grid);
+        }
+
+        /* ==================== 初始位置：滚动到当前时间 ==================== */
+        function scrollToNow() {
+            const now = new Date();
+            // 当前时间点在网格中的纵向位置（px）
+            const nowTop = ((now.getHours() + now.getMinutes() / 60) - GRID_START_HOUR) * hourHeight;
+            // 当前时间线上方留出约 2 小时的缓冲，避免顶到屏幕最上方
+            document.getElementById('app-main').scrollTop = nowTop - 2 * hourHeight;
+        }
+
+        /* ==================== 网格区双指缩放：调整时间轴高度 ==================== */
+        // 注意：缩放时只更新 CSS 变量 --hh，绝不重新渲染网格，
+        // 否则触摸目标被销毁，手势会立刻中断。
+
+        // 计算两个触摸点之间的距离
+        function getTouchDistance(touches) {
+            const dx = touches[0].clientX - touches[1].clientX;
+            const dy = touches[0].clientY - touches[1].clientY;
+            return Math.hypot(dx, dy);
+        }
+
+        // 应用新的每小时高度；scrollRatio 用于缩放后按原比例恢复滚动位置，避免画面跳变
+        function applyHourHeight(h, scrollRatio) {
+            document.getElementById('app-main').style.setProperty('--hh', h + 'px');
+            document.getElementById('app-main').scrollTop = scrollRatio * h * HOURS;
+        }
+
+        const appMain = document.getElementById('app-main');
+
+        // 第二根手指按下：进入捏合手势，记录起始状态
+        appMain.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                pinchState = {
+                    startDist: getTouchDistance(e.touches),  // 起始两指间距
+                    startHourHeight: hourHeight,             // 手势开始时的每小时高度
+                    scrollRatio: appMain.scrollTop / (hourHeight * HOURS) // 当前滚动比例
+                };
+            }
+        }, { passive: true });
+
+        // 双指移动：按比例调整每小时高度
+        appMain.addEventListener('touchmove', (e) => {
+            if (pinchState && e.touches.length === 2) {
+                e.preventDefault(); // 阻止浏览器缩放页面，改由我们调整时间轴
+                const scale = getTouchDistance(e.touches) / pinchState.startDist;
+                const newHeight = Math.round(pinchState.startHourHeight * scale);
+                // 限制在上下限内
+                hourHeight = Math.min(HOUR_HEIGHT_MAX, Math.max(HOUR_HEIGHT_MIN, newHeight));
+                applyHourHeight(hourHeight, pinchState.scrollRatio);
+            }
+        }, { passive: false }); // passive:false 才能调用 preventDefault
+
+        // 手指抬起：少于 2 根手指时结束手势
+        appMain.addEventListener('touchend', (e) => {
+            if (e.touches.length < 2) pinchState = null;
+        });
+
+        // 页面加载：渲染本周网格，并定位到当前时间
+        renderWeekGrid(new Date());
+        scrollToNow();
+
+        /* ==================== 第 1 步：仅绑定交互骨架 ==================== */
+        /* 注意：这里只写 UI 交互（选中态），数据逻辑之后再补 */
+
+        // 底部导航切换：点哪项，哪项高亮
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+                item.classList.add('active');
+                // TODO: 之后在这里切换中间内容区的页面
+            });
+        });
+
+        // 顶部按钮暂时只打印日志，确认点击事件连通
+        document.getElementById('btn-today').addEventListener('click', () => console.log('回到今天'));
+        document.getElementById('btn-prev-week').addEventListener('click', () => console.log('上一周'));
+        document.getElementById('btn-next-week').addEventListener('click', () => console.log('下一周'));
+        document.getElementById('btn-menu').addEventListener('click', () => console.log('打开菜单'));
+    </script>
+</body>
+</html>
